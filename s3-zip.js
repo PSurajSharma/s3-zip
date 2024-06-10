@@ -34,8 +34,10 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     }
 
     console.log(
-        `inputBucket: ${inputBucket}, outputBucket: ${outputBucket}, inputDir: ${inputDir}, outputKey: ${outputKey}`
+        `inputBucket: ${inputBucket}, outputBucket: ${outputBucket}, inputDir: ${inputDir}, outputKey: ${outputKey}, format : ${format}`
     );
+
+    const outputFileName = outputKey + "." + format
 
     let files;
     if (inputBucket) {
@@ -52,7 +54,7 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     const uploadParams = {
         Body: streamPassThrough,
         ContentType: "application/zip",
-        Key: outputKey,
+        Key: outputFileName,
         Bucket: outputBucket,
     };
 
@@ -88,14 +90,14 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     archive.on("progress", (progress) => {
         if (progress.entries.processed % 10 === 0) {
             console.log(
-                `archive ${outputKey} progress: ${progress.entries.processed} / ${progress.entries.total}`
+                `archive ${outputFileName} progress: ${progress.entries.processed} / ${progress.entries.total}`
             );
         }
     });
 
     s3Upload.on("httpUploadProgress", (progress) => {
         if (progress.loaded % (1024 * 1024) === 0) {
-            console.log(`upload ${outputKey}, loaded size: ${progress.loaded}`);
+            console.log(`upload ${outputFileName}, loaded size: ${progress.loaded}`);
             console.log(
                 `memory usage: ${process.memoryUsage().heapUsed / 1024 / 1024} MB`
             );
@@ -111,7 +113,7 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
         archive.pipe(streamPassThrough);
         s3FileDownloadStreams.forEach((ins) => {
-            if (outputKey === ins.fileName || ins.fileName === (inputDir + "/") || ins.fileName === "/") {
+            if (outputFileName === ins.fileName || ins.fileName === (inputDir + "/") || ins.fileName === "/") {
                 console.warn(`skipping file: ${ins.fileName}`);
                 // skip the output file, may be duplicating zip files
                 return;
@@ -124,10 +126,10 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     });
     console.log("Upload done");
     await s3Upload.promise();
-    
+
     return {
         statusCode: 200,
-        body: JSON.stringify({outputKey}),
+        body: JSON.stringify({outputFileName}),
     };
 }
 
