@@ -49,12 +49,34 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
     console.log(`input files size: ${files.length}`);
 
+    const batches = createBatches(files, BATCH_SIZE);
+    console.log("number of batches",batches.length)
+    for (let i = 0; i < batches.length; i++) {
+        await uploadBatch(batches[i], i, inputBucket, outputBucket, inputDir, outputKey, format);
+    }
+
+    return {
+        statusCode: 200,
+        body: JSON.stringify({outputFileName}),
+    };
+}
+
+const createBatches = (files, batchSize) => {
+    const batches = [];
+    for (let i = 0; i < files.length; i += batchSize) {
+        batches.push(files.slice(i, i + batchSize));
+    }
+    return batches;
+}
+
+const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDir, outputKey, format) => {
+    const batchFileName = `${outputKey}_${batchIndex}.${format}`;
     const streamPassThrough = new stream.PassThrough();
 
     const uploadParams = {
         Body: streamPassThrough,
         ContentType: "application/zip",
-        Key: outputFileName,
+        Key: batchFileName,
         Bucket: outputBucket,
     };
 
@@ -66,7 +88,6 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
         }
     });
 
-// get all input files streams
     const s3FileDownloadStreams = files.map((file) => {
         return {
             stream: new lazystream.Readable(() => {
@@ -90,14 +111,14 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     archive.on("progress", (progress) => {
         if (progress.entries.processed % 10 === 0) {
             console.log(
-                `archive ${outputFileName} progress: ${progress.entries.processed} / ${progress.entries.total}`
+                `archive ${batchFileName} progress: ${progress.entries.processed} / ${progress.entries.total}`
             );
         }
     });
 
     s3Upload.on("httpUploadProgress", (progress) => {
         if (progress.loaded % (1024 * 1024) === 0) {
-            console.log(`upload ${outputFileName}, loaded size: ${progress.loaded}`);
+            console.log(`upload ${batchFileName}, loaded size: ${progress.loaded}`);
             console.log(
                 `memory usage: ${process.memoryUsage().heapUsed / 1024 / 1024} MB`
             );
@@ -113,7 +134,7 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
         archive.pipe(streamPassThrough);
         s3FileDownloadStreams.forEach((ins) => {
-            if (outputFileName === ins.fileName || ins.fileName === (inputDir + "/") || ins.fileName === "/") {
+            if (batchFileName === ins.fileName || ins.fileName === (inputDir + "/") || ins.fileName === "/") {
                 console.warn(`skipping file: ${ins.fileName}`);
                 // skip the output file, may be duplicating zip files
                 return;
@@ -126,13 +147,7 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     });
     console.log("Upload done");
     await s3Upload.promise();
-
-    return {
-        statusCode: 200,
-        body: JSON.stringify({outputFileName}),
-    };
 }
-
 
 const listObjects = async (bucket, prefix) => {
     let params = {
@@ -157,6 +172,7 @@ const getContents = (data, prefix) => {
         return {key: item.Key, fileName};
     });
 };
+
 const onEvent = (event, reject) => {
     console.log(`on: ${event}`);
     reject();
@@ -175,9 +191,10 @@ const INPUT_DIRECTORY = process.env.INPUT_DIRECTORY
 const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
 const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
 const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
+const BATCH_SIZE = process.env.BATCH_SIZE || 2;
 
-start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async => {
+
+start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async () => {
     const params = {Bucket: OUTPUT_BUCKET, Key: OUTPUT_FILE_NAME};
     transfer(sftpConfig, params, OUTPUT_FILE_NAME)
-})
-
+});
