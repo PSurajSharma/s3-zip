@@ -28,7 +28,7 @@ const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
     // });
 }
 
-const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, sftpConfig, batchSize) {
+const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, context, callback) {
     if (!inputBucket || !outputBucket) {
         throw new Error("Missing bucket name");
     }
@@ -36,6 +36,8 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     console.log(
         `inputBucket: ${inputBucket}, outputBucket: ${outputBucket}, inputDir: ${inputDir}, outputKey: ${outputKey}, format : ${format}`
     );
+
+    const outputFileName = outputKey + "." + format
 
     let files;
     if (inputBucket) {
@@ -45,30 +47,57 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
         throw new Error("Missing files, or inputDir is empty");
     }
 
-    console.log(`Input files size: ${files.length}`);
+    console.log(`input files size: ${files.length}`);
 
-    // Split files into batches
+    const batches = createBatches(files, BATCH_SIZE);
+    console.log("number of batches",batches.length)
+    for (let i = 0; i < batches.length; i++) {
+        await uploadBatch(batches[i], i, inputBucket, outputBucket, inputDir, outputKey, format);
+    }
+
+    return {
+        statusCode: 200,
+        body: JSON.stringify({outputFileName}),
+    };
+}
+
+const createBatches = (files, batchSize) => {
     const batches = [];
     for (let i = 0; i < files.length; i += batchSize) {
         batches.push(files.slice(i, i + batchSize));
     }
+    return batches;
+}
 
-    console.log(`Total number of batches: ${batches.length}`);
-
-    for (let i = 0; i < batches.length; i++) {
-        const batch = batches[i];
-        const outputFileName = `${outputKey}-batch-${i + 1}.${format}`;
-
+const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDir, outputKey, format) => {
+    const batchFileName = `${outputKey}_${batchIndex}.${format}`;
     const streamPassThrough = new stream.PassThrough();
 
     const uploadParams = {
         Body: streamPassThrough,
         ContentType: "application/zip",
-        Key: outputFileName,
+        Key: batchFileName,
         Bucket: outputBucket,
     };
 
-        const s3Upload = s3.upload(uploadParams).promise();
+    const s3Upload = s3.upload(uploadParams, (err) => {
+        if (err) {
+            console.error("upload error", err);
+        } else {
+            console.log("upload done");
+        }
+    });
+
+    const s3FileDownloadStreams = files.map((file) => {
+        return {
+            stream: new lazystream.Readable(() => {
+                return s3
+                    .getObject({Bucket: inputBucket, Key: file.key})
+                    .createReadStream();
+            }),
+            fileName: file.fileName,
+        };
+    });
 
     const archive = archiver(format, {
         zlib: {level: 0},
@@ -82,14 +111,14 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     archive.on("progress", (progress) => {
         if (progress.entries.processed % 10 === 0) {
             console.log(
-                `archive ${outputFileName} progress: ${progress.entries.processed} / ${progress.entries.total}`
+                `archive ${batchFileName} progress: ${progress.entries.processed} / ${progress.entries.total}`
             );
         }
     });
 
     s3Upload.on("httpUploadProgress", (progress) => {
         if (progress.loaded % (1024 * 1024) === 0) {
-            console.log(`upload ${outputFileName}, loaded size: ${progress.loaded}`);
+            console.log(`upload ${batchFileName}, loaded size: ${progress.loaded}`);
             console.log(
                 `memory usage: ${process.memoryUsage().heapUsed / 1024 / 1024} MB`
             );
@@ -101,34 +130,24 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
         streamPassThrough.on("end", () => onEvent("end", resolve));
         streamPassThrough.on("error", () => onEvent("error", reject));
 
-            console.log(`Starting upload for batch ${i + 1}`);
+        console.log("Starting upload");
 
-            archive.pipe(streamPassThrough);
-            batch.forEach((file) => {
-                console.log(`Appending file: ${file.key}`);
-                archive.append(
-                    s3.getObject({ Bucket: inputBucket, Key: file.key }).createReadStream(),
-                    { name: file.fileName }
-                );
-            });
-            archive.finalize();
-        }).catch((error) => {
-            throw new Error(`${error.code} ${error.message} ${error.data}`);
+        archive.pipe(streamPassThrough);
+        s3FileDownloadStreams.forEach((ins) => {
+            if (batchFileName === ins.fileName || ins.fileName === (inputDir + "/") || ins.fileName === "/") {
+                console.warn(`skipping file: ${ins.fileName}`);
+                // skip the output file, may be duplicating zip files
+                return;
+            }
+            archive.append(ins.stream, {name: ins.fileName});
         });
-
-        await s3Upload;
-        console.log(`Batch ${i + 1} upload complete`);
-
-        const params = { Bucket: outputBucket, Key: outputFileName };
-        await sftpTransfer(sftpConfig, params, outputFileName);
-    }
-
-    return {
-        statusCode: 200,
-        body: JSON.stringify({outputFileName}),
-    };
+        archive.finalize();
+    }).catch((error) => {
+        throw new Error(`${error.code} ${error.message} ${error.data}`);
+    });
+    console.log("Upload done");
+    await s3Upload.promise();
 }
-
 
 const listObjects = async (bucket, prefix) => {
     let params = {
@@ -153,6 +172,7 @@ const getContents = (data, prefix) => {
         return {key: item.Key, fileName};
     });
 };
+
 const onEvent = (event, reject) => {
     console.log(`on: ${event}`);
     reject();
@@ -166,14 +186,15 @@ const sftpConfig = {
     dir: process.env.SFTP_DIR,
 }
 
-const INPUT_BUCKET = process.env.INPUT_BUCKET
-const INPUT_DIRECTORY = process.env.INPUT_DIRECTORY
-const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
-const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
-const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
+const INPUT_BUCKET = 'inputbuckettesting'
+const INPUT_DIRECTORY = 'inputFolder'
+const OUTPUT_BUCKET = 'outputbuckettesting'
+const OUTPUT_FILE_NAME = 'test'
+const OUTPUT_FORMAT = 'zip'
+const BATCH_SIZE = process.env.BATCH_SIZE || 2;
 
-start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async => {
+
+start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async () => {
     const params = {Bucket: OUTPUT_BUCKET, Key: OUTPUT_FILE_NAME};
     transfer(sftpConfig, params, OUTPUT_FILE_NAME)
-})
-
+});
