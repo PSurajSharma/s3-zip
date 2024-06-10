@@ -28,7 +28,7 @@ const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
     // });
 }
 
-const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, context, callback) {
+const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, sftpConfig, batchSize) {
     if (!inputBucket || !outputBucket) {
         throw new Error("Missing bucket name");
     }
@@ -36,8 +36,6 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     console.log(
         `inputBucket: ${inputBucket}, outputBucket: ${outputBucket}, inputDir: ${inputDir}, outputKey: ${outputKey}, format : ${format}`
     );
-
-    const outputFileName = outputKey + "." + format
 
     let files;
     if (inputBucket) {
@@ -47,7 +45,19 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
         throw new Error("Missing files, or inputDir is empty");
     }
 
-    console.log(`input files size: ${files.length}`);
+    console.log(`Input files size: ${files.length}`);
+
+    // Split files into batches
+    const batches = [];
+    for (let i = 0; i < files.length; i += batchSize) {
+        batches.push(files.slice(i, i + batchSize));
+    }
+
+    console.log(`Total number of batches: ${batches.length}`);
+
+    for (let i = 0; i < batches.length; i++) {
+        const batch = batches[i];
+        const outputFileName = `${outputKey}-batch-${i + 1}.${format}`;
 
     const streamPassThrough = new stream.PassThrough();
 
@@ -58,25 +68,7 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
         Bucket: outputBucket,
     };
 
-    const s3Upload = s3.upload(uploadParams, (err) => {
-        if (err) {
-            console.error("upload error", err);
-        } else {
-            console.log("upload done");
-        }
-    });
-
-// get all input files streams
-    const s3FileDownloadStreams = files.map((file) => {
-        return {
-            stream: new lazystream.Readable(() => {
-                return s3
-                    .getObject({Bucket: inputBucket, Key: file.key})
-                    .createReadStream();
-            }),
-            fileName: file.fileName,
-        };
-    });
+        const s3Upload = s3.upload(uploadParams).promise();
 
     const archive = archiver(format, {
         zlib: {level: 0},
@@ -109,23 +101,27 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
         streamPassThrough.on("end", () => onEvent("end", resolve));
         streamPassThrough.on("error", () => onEvent("error", reject));
 
-        console.log("Starting upload");
+            console.log(`Starting upload for batch ${i + 1}`);
 
-        archive.pipe(streamPassThrough);
-        s3FileDownloadStreams.forEach((ins) => {
-            if (outputFileName === ins.fileName || ins.fileName === (inputDir + "/") || ins.fileName === "/") {
-                console.warn(`skipping file: ${ins.fileName}`);
-                // skip the output file, may be duplicating zip files
-                return;
-            }
-            archive.append(ins.stream, {name: ins.fileName});
+            archive.pipe(streamPassThrough);
+            batch.forEach((file) => {
+                console.log(`Appending file: ${file.key}`);
+                archive.append(
+                    s3.getObject({ Bucket: inputBucket, Key: file.key }).createReadStream(),
+                    { name: file.fileName }
+                );
+            });
+            archive.finalize();
+        }).catch((error) => {
+            throw new Error(`${error.code} ${error.message} ${error.data}`);
         });
-        archive.finalize();
-    }).catch((error) => {
-        throw new Error(`${error.code} ${error.message} ${error.data}`);
-    });
-    console.log("Upload done");
-    await s3Upload.promise();
+
+        await s3Upload;
+        console.log(`Batch ${i + 1} upload complete`);
+
+        const params = { Bucket: outputBucket, Key: outputFileName };
+        await sftpTransfer(sftpConfig, params, outputFileName);
+    }
 
     return {
         statusCode: 200,
