@@ -186,11 +186,11 @@ const sftpConfig = {
     dir: process.env.SFTP_DIR,
 }
 
-const INPUT_BUCKET = 'inputbuckettesting'
-const INPUT_DIRECTORY = 'inputFolder'
-const OUTPUT_BUCKET = 'outputbuckettesting'
-const OUTPUT_FILE_NAME = 'test'
-const OUTPUT_FORMAT = 'zip'
+const INPUT_BUCKET = process.env.INPUT_BUCKET
+const INPUT_DIRECTORY = process.env.INPUT_DIRECTORY
+const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
+const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
+const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
 const BATCH_SIZE = process.env.BATCH_SIZE || 2;
 
 
