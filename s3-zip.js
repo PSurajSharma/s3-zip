@@ -16,18 +16,19 @@ AWS.config.update({httpOptions: {agent}, region: "eu-south-2"});
 
 const s3 = new AWS.S3();
 
-function sftpTransfer(sftpConfig, params, outputKey) {
-    return sftp.connect(sftpConfig).then(async () => {
-        console.log("Connected to SFTP")
-
-        const s3Stream = s3.getObject(params).createReadStream();
-
-        await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
-        await sftp.end();
-    });
+const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
+    console.log("Doing transfer")
+    // return sftp.connect(sftpConfig).then(async () => {
+    //     console.log("Connected to SFTP")
+    //
+    //     const s3Stream = s3.getObject(params).createReadStream();
+    //
+    //     await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
+    //     await sftp.end();
+    // });
 }
 
-const start = async function (inputBucket, inputDir, outputBucket, outputKey, sftpConfig, context, callback) {
+const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, context, callback) {
     if (!inputBucket || !outputBucket) {
         throw new Error("Missing bucket name");
     }
@@ -75,7 +76,7 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, sf
         };
     });
 
-    const archive = archiver("zip", {
+    const archive = archiver(format, {
         zlib: {level: 0},
     });
     archive.on("error", (error) => {
@@ -111,7 +112,7 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, sf
         archive.pipe(streamPassThrough);
         s3FileDownloadStreams.forEach((ins) => {
             if (outputKey === ins.fileName || ins.fileName === (inputDir + "/") || ins.fileName === "/") {
-                console.warn(`skip output file: ${ins.fileName}`);
+                console.warn(`skipping file: ${ins.fileName}`);
                 // skip the output file, may be duplicating zip files
                 return;
             }
@@ -123,9 +124,7 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, sf
     });
     console.log("Upload done");
     await s3Upload.promise();
-
-    const params = {Bucket: outputBucket, Key: outputKey};
-    await sftpTransfer(sftpConfig, params, outputKey)
+    
     return {
         statusCode: 200,
         body: JSON.stringify({outputKey}),
@@ -173,5 +172,10 @@ const INPUT_BUCKET = process.env.INPUT_BUCKET
 const INPUT_DIRECTORY = process.env.INPUT_DIRECTORY
 const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
 const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
+const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
 
-start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, sftpConfig)
+start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async => {
+    const params = {Bucket: OUTPUT_BUCKET, Key: OUTPUT_FILE_NAME};
+    transfer(sftpConfig, params, OUTPUT_FILE_NAME)
+})
+
