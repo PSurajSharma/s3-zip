@@ -8,7 +8,7 @@ const stream = require("stream");
 const archiver = require("archiver");
 const https = require("https");
 const lazystream = require("lazystream");
-const {app} = require("serverless/lib/cli/commands-schema/common-options/aws-service");
+const zlib = require('zlib');
 const path = require('path');
 const agent = new https.Agent({keepAlive: true, maxSockets: 16});
 
@@ -130,7 +130,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         }
     });
 
-    await new Promise((resolve, reject) => {
+    await new Promise(async(resolve, reject) => {
         streamPassThrough.on("close", () => onEvent("close", resolve));
         streamPassThrough.on("end", () => onEvent("end", resolve));
         streamPassThrough.on("error", () => onEvent("error", reject));
@@ -144,18 +144,52 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             }
             archive.append(ins.stream, {name: ins.fileName});
         });
-        archive.finalize();
+        await archive.finalize();
     }).catch((error) => {
         throw new Error(`${error.code} ${error.message} ${error.data}`);
     });
     s3FileDownloadStreams.forEach((ins) => {
         ins.stream.end()
     })
-    console.log("Upload done");
+    console.log(`Upload done for the batchFileName:${batchFileName}`);
     await s3Upload.promise();
     streamPassThrough.end()
+    // Perform gzip compression and deletion if ENABLE_GZIP is true
+    if (ENABLE_GZIP) {
+        await gzipAndUpload(outputBucket, batchFileName, outputBucket);
+    }
 }
 
+const gzipAndUpload = async (bucket, key, outputBucket) => {
+    const gzipKey = `${key}.gz`;
+    const readStream = s3.getObject({Bucket: bucket, Key: key}).createReadStream();
+    const gzipStream = zlib.createGzip();
+    const writeStream = new stream.PassThrough();
+
+    const uploadParams = {
+        Body: writeStream,
+        ContentType: "application/gzip",
+        Key: gzipKey,
+        Bucket: outputBucket,
+    };
+
+    try {
+        const s3Upload = s3.upload(uploadParams);
+
+        readStream.pipe(gzipStream).pipe(writeStream);
+
+        await s3Upload.promise();
+
+        console.log(`Gzipped file uploaded: ${gzipKey}`);
+
+        await s3.deleteObject({Bucket: bucket, Key: key}).promise();
+
+        console.log(`Original file deleted: ${key}`);
+    } catch (error) {
+        console.error("Gzip and upload error:", error);
+        throw error;
+    }
+}
 const listObjects = async (bucket, prefix) => {
     let params = {
         Bucket: bucket,
@@ -199,6 +233,7 @@ const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
 const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
 const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
 const BATCH_SIZE = process.env.BATCH_SIZE || 2;
+const ENABLE_GZIP = process.env.ENABLE_GZIP || true;
 
 start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async () => {
     const params = {Bucket: OUTPUT_BUCKET, Key: OUTPUT_FILE_NAME};
