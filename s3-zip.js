@@ -49,8 +49,8 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
     console.log(`input files size: ${files.length}`);
 
-    const batches = createBatches(files, BATCH_SIZE);
-    console.log("number of batches",batches.length)
+    const batches = createBatches(files, parseInt(BATCH_SIZE, 10));
+    console.log("number of batches", batches.length)
     for (let i = 0; i < batches.length; i++) {
         await uploadBatch(batches[i], i, inputBucket, outputBucket, inputDir, outputKey, format);
     }
@@ -109,7 +109,12 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
     });
 
     archive.on("progress", (progress) => {
-        if (progress.entries.processed % 10 === 0) {
+        let batchSize = parseInt(BATCH_SIZE, 10);
+        let logKey = batchSize
+        if (batchSize > 100) {
+            logKey = 100
+        }
+        if (progress.entries.processed % logKey === 0) {
             console.log(
                 `archive ${batchFileName} progress: ${progress.entries.processed} / ${progress.entries.total}`
             );
@@ -118,7 +123,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
 
     s3Upload.on("httpUploadProgress", (progress) => {
         if (progress.loaded % (1024 * 1024) === 0) {
-            console.log(`upload ${batchFileName}, loaded size: ${progress.loaded}`);
+            console.log(`upload ${outputKey}, loaded size: ${progress.loaded}`);
             console.log(
                 `memory usage: ${process.memoryUsage().heapUsed / 1024 / 1024} MB`
             );
@@ -129,8 +134,6 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         streamPassThrough.on("close", () => onEvent("close", resolve));
         streamPassThrough.on("end", () => onEvent("end", resolve));
         streamPassThrough.on("error", () => onEvent("error", reject));
-
-        console.log("Starting upload");
 
         archive.pipe(streamPassThrough);
         s3FileDownloadStreams.forEach((ins) => {
@@ -192,7 +195,6 @@ const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
 const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
 const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
 const BATCH_SIZE = process.env.BATCH_SIZE || 2;
-
 
 start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async () => {
     const params = {Bucket: OUTPUT_BUCKET, Key: OUTPUT_FILE_NAME};
