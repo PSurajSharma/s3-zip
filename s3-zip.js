@@ -10,6 +10,7 @@ const https = require("https");
 const lazystream = require("lazystream");
 const zlib = require('zlib');
 const path = require('path');
+const {sleep} = require("ssh2-sftp-client/src/utils");
 const agent = new https.Agent({keepAlive: true, maxSockets: 16});
 
 AWS.config.update({httpOptions: {agent}, region: "eu-south-2"});
@@ -130,7 +131,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         }
     });
 
-    await new Promise(async(resolve, reject) => {
+    await new Promise(async (resolve, reject) => {
         streamPassThrough.on("close", () => onEvent("close", resolve));
         streamPassThrough.on("end", () => onEvent("end", resolve));
         streamPassThrough.on("error", () => onEvent("error", reject));
@@ -144,6 +145,8 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             }
             archive.append(ins.stream, {name: ins.fileName});
         });
+
+        await sleep(2000)
         await archive.finalize();
     }).catch((error) => {
         throw new Error(`${error.code} ${error.message} ${error.data}`);
