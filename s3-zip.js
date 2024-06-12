@@ -1,3 +1,5 @@
+"use strict";
+
 require('aws-sdk/lib/maintenance_mode_message').suppress = true;
 
 const Client = require('ssh2-sftp-client');
@@ -6,8 +8,9 @@ const sftp = new Client();
 const AWS = require("aws-sdk");
 const stream = require("stream");
 const archiver = require("archiver");
+const request = require("request");
 const https = require("https");
-const lazystream = require("lazystream");
+const path = require("path");
 const zlib = require('zlib');
 const path = require('path');
 const agent = new https.Agent({keepAlive: true, maxSockets: 16});
@@ -83,6 +86,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         ContentType: "application/zip",
         Key: batchFileName,
         Bucket: outputBucket,
+        ServerSideEncryption: "AES256"
     };
 
     try {
@@ -128,8 +132,8 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
                 return;
             }
             console.log("Appending file to archive:", fileName);
-            const s3Stream = s3.getObject({Bucket: inputBucket, Key: ins.key}).createReadStream();
-            archive.append(s3Stream, {name: fileName});
+            const s3Stream = getStream(inputBucket, ins.key);
+            archive.append(s3Stream, { name: fileName });
         }
         archive.finalize();
 
@@ -139,7 +143,28 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         console.error("Upload batch error:", error);
         throw error;
     }
-}
+};
+
+const getStream = (bucket, key) => {
+    let streamCreated = false;
+    const passThroughStream = new stream.PassThrough();
+
+    passThroughStream.on("newListener", event => {
+        if (!streamCreated && event === "data") {
+            const s3Stream = s3
+                .getObject({ Bucket: bucket, Key: key })
+                .createReadStream();
+            s3Stream
+                .on("error", err => passThroughStream.emit("error", err))
+                .pipe(passThroughStream);
+
+            streamCreated = true;
+        }
+    });
+
+    return passThroughStream;
+};
+
 
 const listObjects = async (bucket, prefix) => {
     let params = {
