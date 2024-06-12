@@ -161,10 +161,8 @@ const getStream = (bucket, key) => {
             streamCreated = true;
         }
     });
-
     return passThroughStream;
-};
-
+}
 
 const listObjects = async (bucket, prefix) => {
     let params = {
