@@ -52,9 +52,10 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
     const batches = createBatches(files, parseInt(BATCH_SIZE, 10));
     console.log("number of batches", batches.length)
-    for (let i = 0; i < batches.length; i++) {
-        await uploadBatch(batches[i], i, inputBucket, outputBucket, inputDir, outputKey, format);
-    }
+    //parallel processing for performance faster
+    await Promise.all(batches.map(async (batch, i) => {
+        await uploadBatch(batch, i, inputBucket, outputBucket, inputDir, outputKey, format);
+    }));
 
     return {
         statusCode: 200,
