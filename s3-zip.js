@@ -18,7 +18,7 @@ AWS.config.update({httpOptions: {agent}, region: "eu-south-2"});
 const s3 = new AWS.S3();
 
 const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
-    console.log("Doing transfer")
+    console.log(`Initiating file for transfer for ${outputKey} to ${sftpConfig.host}`)
     // return sftp.connect(sftpConfig).then(async () => {
     //     console.log("Connected to SFTP")
     //
@@ -26,6 +26,8 @@ const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
     //
     //     await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
     //     await sftp.end();
+    //    
+    //     console.log(`File transfer completed for ${outputKey}`)
     // });
 }
 
@@ -52,7 +54,6 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
     const batches = createBatches(files, parseInt(BATCH_SIZE, 10));
     console.log("number of batches", batches.length)
-    //parallel processing for performance faster
     await Promise.all(batches.map(async (batch, i) => {
         await uploadBatch(batch, i, inputBucket, outputBucket, inputDir, outputKey, format);
     }));
@@ -86,7 +87,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         if (err) {
             console.error("upload error", err);
         } else {
-            console.log("upload done");
+            console.log("S3 Upload done");
         }
     });
 
@@ -100,7 +101,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             fileName: file.fileName,
         };
     });
-
+    
     const archive = archiver(format, {
         zlib: {level: 0},
     });
@@ -147,7 +148,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             archive.append(ins.stream, {name: ins.fileName});
         });
 
-        await sleep(2000)
+        await sleep(10000)
         await archive.finalize();
     }).catch((error) => {
         throw new Error(`${error.code} ${error.message} ${error.data}`);
@@ -155,9 +156,13 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
     s3FileDownloadStreams.forEach((ins) => {
         ins.stream.end()
     })
-    console.log("Upload done");
     await s3Upload.promise();
     streamPassThrough.end()
+
+    const params = {Bucket: OUTPUT_BUCKET, Key: batchFileName};
+    if (ENABLE_FILE_TRANSFER) {
+        await transfer(sftpConfig, params, batchFileName)
+    }
 }
 
 const listObjects = async (bucket, prefix) => {
@@ -204,7 +209,8 @@ const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
 const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
 const BATCH_SIZE = process.env.BATCH_SIZE || 2;
 
+const ENABLE_FILE_TRANSFER = process.env.ENABLE_FILE_TRANSFER || false;
+
 start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async () => {
-    const params = {Bucket: OUTPUT_BUCKET, Key: OUTPUT_FILE_NAME};
-    transfer(sftpConfig, params, OUTPUT_FILE_NAME)
+
 });
