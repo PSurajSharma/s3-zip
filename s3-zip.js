@@ -55,8 +55,8 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
     const batches = createBatches(files, parseInt(BATCH_SIZE, 10));
     console.log("number of batches", batches.length)
-    await Promise.all(batches.map(async (batch, i) => {
-        await uploadBatch(batch, i, inputBucket, outputBucket, inputDir, outputKey, format);
+    await Promise.all(batches.map((batch, i) => {
+        uploadBatch(batch, i, inputBucket, outputBucket, inputDir, outputKey, format);
     }));
 
     return {
@@ -84,13 +84,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         Bucket: outputBucket,
     };
 
-    const s3Upload = s3.upload(uploadParams, (err) => {
-        if (err) {
-            console.error("upload error", err);
-        } else {
-            console.log("S3 Upload done");
-        }
-    });
+    const s3Upload = s3.upload(uploadParams);
 
     const s3FileDownloadStreams = files.map((file) => {
         return {
@@ -133,8 +127,8 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             );
         }
     });
-
-    await new Promise(async (resolve, reject) => {
+    const s3UploadPromise = s3Upload.promise();
+    await new Promise((resolve, reject) => {
         streamPassThrough.on("close", () => onEvent("close", resolve));
         streamPassThrough.on("end", () => onEvent("end", resolve));
         streamPassThrough.on("error", () => onEvent("error", reject));
@@ -149,15 +143,15 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             archive.append(ins.stream, {name: ins.fileName});
         });
 
-        await sleep(10000)
-        await archive.finalize();
+        //await sleep(10000)
+        archive.finalize();
     }).catch((error) => {
         throw new Error(`${error.code} ${error.message} ${error.data}`);
     });
     s3FileDownloadStreams.forEach((ins) => {
         ins.stream.end()
     })
-    await s3Upload.promise();
+    await s3UploadPromise;
     streamPassThrough.end()
 
     const params = {Bucket: OUTPUT_BUCKET, Key: batchFileName};
