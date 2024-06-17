@@ -18,7 +18,7 @@ AWS.config.update({httpOptions: {agent}, region: "eu-south-2"});
 const s3 = new AWS.S3();
 
 const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
-    console.log(`Initiating file for transfer for ${outputKey} to ${sftpConfig.host}`)
+    // console.log(`Initiating file for transfer for ${outputKey} to ${sftpConfig.host}`)
     // return sftp.connect(sftpConfig).then(async () => {
     //     console.log("Connected to SFTP")
     //
@@ -26,9 +26,10 @@ const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
     //
     //     await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
     //     await sftp.end();
-    //    
+    //
     //     console.log(`File transfer completed for ${outputKey}`)
     // });
+    await sleep(10000)
 }
 
 const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, context, callback) {
@@ -212,5 +213,4 @@ const BATCH_SIZE = process.env.BATCH_SIZE || 2;
 const ENABLE_FILE_TRANSFER = process.env.ENABLE_FILE_TRANSFER || false;
 
 start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async () => {
-
 });
