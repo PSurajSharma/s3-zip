@@ -128,7 +128,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         }
     });
     const s3UploadPromise = s3Upload.promise();
-    await new Promise((resolve, reject) => {
+    await new Promise(async(resolve, reject) => {
         streamPassThrough.on("close", () => onEvent("close", resolve));
         streamPassThrough.on("end", () => onEvent("end", resolve));
         streamPassThrough.on("error", () => onEvent("error", reject));
@@ -143,7 +143,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             archive.append(ins.stream, {name: ins.fileName});
         });
 
-        //await sleep(10000)
+        await sleep(10000)
         archive.finalize();
     }).catch((error) => {
         throw new Error(`${error.code} ${error.message} ${error.data}`);
