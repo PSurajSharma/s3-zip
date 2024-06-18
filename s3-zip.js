@@ -159,7 +159,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
     if (ENABLE_GZIP) {
         await gzipAndUpload(outputBucket, batchFileName, outputBucket);
     }
-    
+
     const params = {Bucket: OUTPUT_BUCKET, Key: batchFileName};
     if (ENABLE_FILE_TRANSFER) {
         await transfer(sftpConfig, params, batchFileName)
@@ -168,7 +168,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
 
 const gzipAndUpload = async (bucket, key, outputBucket) => {
     const gzipKey = `${key}.gz`;
-    const readStream = s3.getObject({Bucket: bucket, Key: key}).createReadStream();
+    const readStream = s3.getObject({ Bucket: bucket, Key: key }).createReadStream();
     const gzipStream = zlib.createGzip();
     const writeStream = new stream.PassThrough();
 
@@ -181,21 +181,37 @@ const gzipAndUpload = async (bucket, key, outputBucket) => {
 
     try {
         const s3Upload = s3.upload(uploadParams);
+        s3Upload.on("error", (err) => {
+            console.error("S3 upload error:", err);
+            writeStream.end();
+        });
+
+        s3Upload.on("httpUploadProgress", (progress) => {
+            console.log(`Uploading ${gzipKey}: ${progress.loaded} bytes`);
+        });
 
         readStream.pipe(gzipStream).pipe(writeStream);
 
+        // Wait for the upload to complete
         await s3Upload.promise();
 
         console.log(`Gzipped file uploaded: ${gzipKey}`);
 
-        await s3.deleteObject({Bucket: bucket, Key: key}).promise();
+        // Close and cleanup streams
+        readStream.destroy();
+        gzipStream.destroy();
+        writeStream.end();
+
+        // Delete original file
+        await s3.deleteObject({ Bucket: bucket, Key: key }).promise();
 
         console.log(`Original file deleted: ${key}`);
     } catch (error) {
         console.error("Gzip and upload error:", error);
         throw error;
     }
-}
+};
+
 const listObjects = async (bucket, prefix) => {
     let params = {
         Bucket: bucket,
