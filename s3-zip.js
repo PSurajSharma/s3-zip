@@ -8,7 +8,7 @@ const stream = require("stream");
 const archiver = require("archiver");
 const https = require("https");
 const lazystream = require("lazystream");
-const {app} = require("serverless/lib/cli/commands-schema/common-options/aws-service");
+const zlib = require('zlib');
 const path = require('path');
 const {sleep} = require("ssh2-sftp-client/src/utils");
 const agent = new https.Agent({keepAlive: true, maxSockets: 16});
@@ -155,12 +155,47 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
     await s3UploadPromise;
     streamPassThrough.end()
 
+    // Perform gzip compression and deletion if ENABLE_GZIP is true
+    if (ENABLE_GZIP) {
+        await gzipAndUpload(outputBucket, batchFileName, outputBucket);
+    }
+    
     const params = {Bucket: OUTPUT_BUCKET, Key: batchFileName};
     if (ENABLE_FILE_TRANSFER) {
         await transfer(sftpConfig, params, batchFileName)
     }
 }
 
+const gzipAndUpload = async (bucket, key, outputBucket) => {
+    const gzipKey = `${key}.gz`;
+    const readStream = s3.getObject({Bucket: bucket, Key: key}).createReadStream();
+    const gzipStream = zlib.createGzip();
+    const writeStream = new stream.PassThrough();
+
+    const uploadParams = {
+        Body: writeStream,
+        ContentType: "application/gzip",
+        Key: gzipKey,
+        Bucket: outputBucket,
+    };
+
+    try {
+        const s3Upload = s3.upload(uploadParams);
+
+        readStream.pipe(gzipStream).pipe(writeStream);
+
+        await s3Upload.promise();
+
+        console.log(`Gzipped file uploaded: ${gzipKey}`);
+
+        await s3.deleteObject({Bucket: bucket, Key: key}).promise();
+
+        console.log(`Original file deleted: ${key}`);
+    } catch (error) {
+        console.error("Gzip and upload error:", error);
+        throw error;
+    }
+}
 const listObjects = async (bucket, prefix) => {
     let params = {
         Bucket: bucket,
@@ -204,6 +239,7 @@ const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
 const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
 const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
 const BATCH_SIZE = process.env.BATCH_SIZE || 2;
+const ENABLE_GZIP = process.env.ENABLE_GZIP || true;
 
 const ENABLE_FILE_TRANSFER = process.env.ENABLE_FILE_TRANSFER || false;
 
