@@ -18,7 +18,7 @@ AWS.config.update({httpOptions: {agent}, region: "eu-south-2"});
 const s3 = new AWS.S3();
 
 const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
-    console.log("Doing transfer")
+    // console.log(`Initiating file for transfer for ${outputKey} to ${sftpConfig.host}`)
     // return sftp.connect(sftpConfig).then(async () => {
     //     console.log("Connected to SFTP")
     //
@@ -26,7 +26,10 @@ const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
     //
     //     await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
     //     await sftp.end();
+    //
+    //     console.log(`File transfer completed for ${outputKey}`)
     // });
+    await sleep(10000)
 }
 
 const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, context, callback) {
@@ -52,9 +55,9 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
     const batches = createBatches(files, parseInt(BATCH_SIZE, 10));
     console.log("number of batches", batches.length)
-    for (let i = 0; i < batches.length; i++) {
-        await uploadBatch(batches[i], i, inputBucket, outputBucket, inputDir, outputKey, format);
-    }
+    await Promise.all(batches.map((batch, i) => {
+        uploadBatch(batch, i, inputBucket, outputBucket, inputDir, outputKey, format);
+    }));
 
     return {
         statusCode: 200,
@@ -81,13 +84,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         Bucket: outputBucket,
     };
 
-    const s3Upload = s3.upload(uploadParams, (err) => {
-        if (err) {
-            console.error("upload error", err);
-        } else {
-            console.log("upload done");
-        }
-    });
+    const s3Upload = s3.upload(uploadParams);
 
     const s3FileDownloadStreams = files.map((file) => {
         return {
@@ -130,8 +127,8 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             );
         }
     });
-
-    await new Promise(async (resolve, reject) => {
+    const s3UploadPromise = s3Upload.promise();
+    await new Promise(async(resolve, reject) => {
         streamPassThrough.on("close", () => onEvent("close", resolve));
         streamPassThrough.on("end", () => onEvent("end", resolve));
         streamPassThrough.on("error", () => onEvent("error", reject));
@@ -146,20 +143,26 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             archive.append(ins.stream, {name: ins.fileName});
         });
 
-        await sleep(2000)
+        await sleep(10000)
         await archive.finalize();
+        await sleep(10000)
     }).catch((error) => {
         throw new Error(`${error.code} ${error.message} ${error.data}`);
     });
     s3FileDownloadStreams.forEach((ins) => {
         ins.stream.end()
     })
-    console.log(`Upload done for the batchFileName:${batchFileName}`);
-    await s3Upload.promise();
+    await s3UploadPromise;
     streamPassThrough.end()
+
     // Perform gzip compression and deletion if ENABLE_GZIP is true
     if (ENABLE_GZIP) {
         await gzipAndUpload(outputBucket, batchFileName, outputBucket);
+    }
+    
+    const params = {Bucket: OUTPUT_BUCKET, Key: batchFileName};
+    if (ENABLE_FILE_TRANSFER) {
+        await transfer(sftpConfig, params, batchFileName)
     }
 }
 
@@ -238,7 +241,7 @@ const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
 const BATCH_SIZE = process.env.BATCH_SIZE || 2;
 const ENABLE_GZIP = process.env.ENABLE_GZIP || true;
 
+const ENABLE_FILE_TRANSFER = process.env.ENABLE_FILE_TRANSFER || false;
+
 start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async () => {
-    const params = {Bucket: OUTPUT_BUCKET, Key: OUTPUT_FILE_NAME};
-    transfer(sftpConfig, params, OUTPUT_FILE_NAME)
 });
