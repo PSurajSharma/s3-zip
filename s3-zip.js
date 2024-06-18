@@ -96,7 +96,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             fileName: file.fileName,
         };
     });
-    
+
     const archive = archiver(format, {
         zlib: {level: 0},
     });
@@ -144,7 +144,8 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         });
 
         await sleep(10000)
-        archive.finalize();
+        await archive.finalize();
+        await sleep(10000)
     }).catch((error) => {
         throw new Error(`${error.code} ${error.message} ${error.data}`);
     });
