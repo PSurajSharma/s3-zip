@@ -1,4 +1,5 @@
 require('aws-sdk/lib/maintenance_mode_message').suppress = true;
+require('events').EventEmitter.prototype._maxListeners = 100;
 
 const Client = require('ssh2-sftp-client');
 const sftp = new Client();
@@ -9,6 +10,7 @@ const archiver = require("archiver");
 const https = require("https");
 const lazystream = require("lazystream");
 const zlib = require('zlib');
+const {app} = require("serverless/lib/cli/commands-schema/common-options/aws-service");
 const path = require('path');
 const {sleep} = require("ssh2-sftp-client/src/utils");
 const agent = new https.Agent({keepAlive: true, maxSockets: 16});
@@ -18,21 +20,19 @@ AWS.config.update({httpOptions: {agent}, region: "eu-south-2"});
 const s3 = new AWS.S3();
 
 const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
-    // console.log(`Initiating file for transfer for ${outputKey} to ${sftpConfig.host}`)
-    // return sftp.connect(sftpConfig).then(async () => {
-    //     console.log("Connected to SFTP")
-    //
-    //     const s3Stream = s3.getObject(params).createReadStream();
-    //
-    //     await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
-    //     await sftp.end();
-    //
-    //     console.log(`File transfer completed for ${outputKey}`)
-    // });
-    await sleep(10000)
+    // await sleep(10000)
+    console.log(`Initiating file for transfer for ${outputKey} to ${sftpConfig.host}`)
+
+    const s3Stream = s3.getObject(params).createReadStream();
+
+    await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
+    
+    s3Stream.destroy()
+
+    console.log(`File transfer completed for ${outputKey}`)
 }
 
-const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, context, callback) {
+const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, sftpConfig, instance, context, callback) {
     if (!inputBucket || !outputBucket) {
         throw new Error("Missing bucket name");
     }
@@ -55,9 +55,19 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
     const batches = createBatches(files, parseInt(BATCH_SIZE, 10));
     console.log("number of batches", batches.length)
+    
+    if (ENABLE_FILE_TRANSFER) {
+        await sftp.connect(sftpConfig).then((connection) => {
+            console.log("SFTP connection successful")
+        })
+        await sleep(1000)
+    }
     await Promise.all(batches.map((batch, i) => {
-        uploadBatch(batch, i, inputBucket, outputBucket, inputDir, outputKey, format);
+        uploadBatch(batch, i, batches.length, i === batches.length - 1, inputBucket, outputBucket, inputDir, outputKey, format, instance);
     }));
+    
+    await sftp.end()
+    await sleep(1000)
 
     return {
         statusCode: 200,
@@ -73,8 +83,17 @@ const createBatches = (files, batchSize) => {
     return batches;
 }
 
-const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDir, outputKey, format) => {
-    const batchFileName = `${outputKey}_${batchIndex}.${format}`;
+const uploadBatch = async (files, batchIndex,  totalNumberOfBatches, lastBatch, inputBucket, outputBucket, inputDir, outputKey, format, instance) => {
+    const batchNumber = INSTANCE * totalNumberOfBatches + batchIndex
+    let billRunStr = ''
+    let billRunID;
+    if (instance === 9 && lastBatch) {
+        billRunID = inputDir.split(/(?<=\d)(?=_)/)[0];
+        billRunStr = "_FIN0" + billRunID;
+    }
+
+    let rawBatchFileName = `${outputKey}${batchNumber}${billRunStr}`;
+    const batchFileName = `${rawBatchFileName}.${format}`;
     const streamPassThrough = new stream.PassThrough();
 
     const uploadParams = {
@@ -98,7 +117,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
     });
 
     const archive = archiver(format, {
-        zlib: {level: 0},
+        zlib: {level: zlib.Z_BEST_COMPRESSION},
     });
     archive.on("error", (error) => {
         throw new Error(
@@ -128,7 +147,7 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
         }
     });
     const s3UploadPromise = s3Upload.promise();
-    await new Promise(async(resolve, reject) => {
+    await new Promise(async (resolve, reject) => {
         streamPassThrough.on("close", () => onEvent("close", resolve));
         streamPassThrough.on("end", () => onEvent("end", resolve));
         streamPassThrough.on("error", () => onEvent("error", reject));
@@ -143,9 +162,9 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
             archive.append(ins.stream, {name: ins.fileName});
         });
 
-        await sleep(10000)
+        // await sleep(10000)
         await archive.finalize();
-        await sleep(10000)
+        // await sleep(10000)
     }).catch((error) => {
         throw new Error(`${error.code} ${error.message} ${error.data}`);
     });
@@ -155,20 +174,36 @@ const uploadBatch = async (files, batchIndex, inputBucket, outputBucket, inputDi
     await s3UploadPromise;
     streamPassThrough.end()
 
-    // Perform gzip compression and deletion if ENABLE_GZIP is true
-    if (ENABLE_GZIP) {
-        await gzipAndUpload(outputBucket, batchFileName, outputBucket);
-    }
+    let finalTarFileName = `${rawBatchFileName}.tar`;
+    await s3.copyObject({
+        Bucket: outputBucket,
+        CopySource: `${outputBucket}/${batchFileName}`,
+        Key: finalTarFileName
+    }).promise()
+        .then(() => {
+            s3.deleteObject({
+                Bucket: outputBucket,
+                Key: batchFileName
+            }).promise()
+                .then(()=> {
+                })
+                .catch((e) => {
+                    console.error(e)
+                })
+        })
+    // await sleep(20000)
 
-    const params = {Bucket: OUTPUT_BUCKET, Key: batchFileName};
+    await gzipAndUpload(outputBucket, finalTarFileName, outputBucket);
+    
+    const params = {Bucket: OUTPUT_BUCKET, Key: `${finalTarFileName}.gz`};
     if (ENABLE_FILE_TRANSFER) {
-        await transfer(sftpConfig, params, batchFileName)
+        await transfer(sftpConfig, params, `${finalTarFileName}.gz`)
     }
 }
 
 const gzipAndUpload = async (bucket, key, outputBucket) => {
     const gzipKey = `${key}.gz`;
-    const readStream = s3.getObject({ Bucket: bucket, Key: key }).createReadStream();
+    const readStream = s3.getObject({Bucket: bucket, Key: key}).createReadStream();
     const gzipStream = zlib.createGzip();
     const writeStream = new stream.PassThrough();
 
@@ -181,15 +216,6 @@ const gzipAndUpload = async (bucket, key, outputBucket) => {
 
     try {
         const s3Upload = s3.upload(uploadParams);
-        s3Upload.on("error", (err) => {
-            console.error("S3 upload error:", err);
-            writeStream.end();
-        });
-
-        s3Upload.on("httpUploadProgress", (progress) => {
-            console.log(`Uploading ${gzipKey}: ${progress.loaded} bytes`);
-        });
-
         readStream.pipe(gzipStream).pipe(writeStream);
 
         // Wait for the upload to complete
@@ -197,19 +223,21 @@ const gzipAndUpload = async (bucket, key, outputBucket) => {
 
         console.log(`Gzipped file uploaded: ${gzipKey}`);
 
-        // Close and cleanup streams
-        readStream.destroy();
-        gzipStream.destroy();
-        writeStream.end();
-
         // Delete original file
-        await s3.deleteObject({ Bucket: bucket, Key: key }).promise();
+        await s3.deleteObject({Bucket: bucket, Key: key}).promise();
 
         console.log(`Original file deleted: ${key}`);
     } catch (error) {
         console.error("Gzip and upload error:", error);
         throw error;
+    } finally {
+        // Close and cleanup streams
+        await readStream.destroy();
+        await gzipStream.destroy();
+        await writeStream.end();
     }
+
+    await sleep(10000)
 };
 
 const listObjects = async (bucket, prefix) => {
@@ -242,22 +270,21 @@ const onEvent = (event, reject) => {
 };
 
 const sftpConfig = {
-    host: process.env.SFTP_HOST,
-    port: process.env.SFTP_PORT,
-    user: process.env.SFTP_USER,
-    password: process.env.SFTP_PASSWORD,
-    dir: process.env.SFTP_DIR,
+    host: process.env.SFTP_PORT || "192.168.1.2",
+    port: parseInt(process.env.SFTP_PORT || "22", 10),
+    user: process.env.SFTP_USER || "tester",
+    password: process.env.SFTP_PASSWORD || "password",
+    dir: process.env.SFTP_DIR || "/s3",
 }
 
 const INPUT_BUCKET = process.env.INPUT_BUCKET
 const INPUT_DIRECTORY = process.env.INPUT_DIRECTORY
 const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
 const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
-const OUTPUT_FORMAT = process.env.OUTPUT_FORMAT
+const INSTANCE = parseInt(process.env.INSTANCE, 10)
 const BATCH_SIZE = process.env.BATCH_SIZE || 2;
-const ENABLE_GZIP = process.env.ENABLE_GZIP || true;
 
 const ENABLE_FILE_TRANSFER = process.env.ENABLE_FILE_TRANSFER || false;
 
-start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, OUTPUT_FORMAT, sftpConfig).then(async () => {
+start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, "zip", sftpConfig, INSTANCE).then(async () => {
 });
