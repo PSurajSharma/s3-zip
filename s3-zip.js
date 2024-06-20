@@ -69,12 +69,17 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
         })
         await sleep(1000)
     }
-    await Promise.all(batches.map((batch, i) => {
-        uploadBatch(batch, i, batches.length, i === batches.length - 1, inputBucket, outputBucket, inputDir, outputKey, format, instance);
-    }));
+    try {
+        await Promise.all(batches.map((batch, i) => {
+            return uploadBatch(batch, i, batches.length, i === batches.length - 1, inputBucket, outputBucket, inputDir, outputKey, format, instance);
+        }));
+    } catch (error) {
+        console.error("Error during batch upload:", error);
+        throw error;
+    }
     
-    await sftp.end()
     await sleep(1000)
+    await cleanupAndStopProcess();
 
     return {
         statusCode: 200,
@@ -275,6 +280,15 @@ const onEvent = (event, reject) => {
     console.log(`on: ${event}`);
     reject();
 };
+
+const cleanupAndStopProcess = async () => {
+    // Close SFTP connection if open
+    if (ENABLE_FILE_TRANSFER && sftp.sftp) {
+        await sftp.end();
+    }
+    console.log("Cleanup completed. Stopping process.");
+    process.exit(0); // Exit the Node.js process with success code
+}
 
 const sftpConfig = {
     host: process.env.SFTP_PORT || "192.168.1.2",
