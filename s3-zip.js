@@ -21,15 +21,22 @@ const s3 = new AWS.S3();
 
 const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
     // await sleep(10000)
-    console.log(`Initiating file for transfer for ${outputKey} to ${sftpConfig.host}`)
-
+    console.log(`Initiating file transfer for ${outputKey} to ${sftpConfig.host}`);
+    if (!sftp.sftp) {
+        console.log("Reconnecting to SFTP server...");
+        await sftp.connect(sftpConfig);
+    }
     const s3Stream = s3.getObject(params).createReadStream();
-
-    await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
     
-    s3Stream.destroy()
-
-    console.log(`File transfer completed for ${outputKey}`)
+    try {
+        await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
+        console.log(`File transfer completed for ${outputKey}`);
+    } catch (error) {
+        console.error(`Failed to transfer file: ${outputKey}`, error);
+        throw error;
+    } finally {
+        s3Stream.destroy();
+    }
 }
 
 const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, sftpConfig, instance, context, callback) {
