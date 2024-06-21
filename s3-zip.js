@@ -14,7 +14,7 @@ const {app} = require("serverless/lib/cli/commands-schema/common-options/aws-ser
 const path = require('path');
 const {sleep} = require("ssh2-sftp-client/src/utils");
 const agent = new https.Agent({keepAlive: true, maxSockets: 16});
-
+const  zipToTar  = require('zip-to-tar');
 AWS.config.update({httpOptions: {agent}, region: "eu-south-2"});
 
 const s3 = new AWS.S3();
@@ -187,22 +187,44 @@ const uploadBatch = async (files, batchIndex,  totalNumberOfBatches, lastBatch, 
     streamPassThrough.end()
 
     let finalTarFileName = `${rawBatchFileName}.tar`;
-    await s3.copyObject({
-        Bucket: outputBucket,
-        CopySource: `${outputBucket}/${batchFileName}`,
-        Key: finalTarFileName
-    }).promise()
-        .then(() => {
-            s3.deleteObject({
-                Bucket: outputBucket,
-                Key: batchFileName
-            }).promise()
-                .then(()=> {
-                })
-                .catch((e) => {
-                    console.error(e)
-                })
-        })
+    let tarStream;
+    try {
+        const zipData = await s3.getObject({ Bucket: outputBucket, Key: batchFileName }).promise();
+        const zipBuffer = zipData.Body;
+        // Convert ZIP to TAR
+        tarStream = zipToTar(zipBuffer, { progress: true })
+            .on('error', (error) => {
+                console.error("Error converting ZIP to TAR:", error);
+                throw error;
+            })
+            .getStream();
+
+        // Upload TAR file to S3
+        const uploadParams = {
+            Bucket: outputBucket,
+            Key: finalTarFileName,
+            Body: tarStream
+        };
+        await s3.upload(uploadParams).promise();
+
+        console.log(`Converted and uploaded TAR file: ${finalTarFileName}`);
+
+        //Delete original ZIP file from S3
+        await s3.deleteObject({
+            Bucket: outputBucket,
+            Key: batchFileName,
+        }).promise();
+        console.log(`Deleted original ZIP file: ${batchFileName}`);
+    } catch (error) {
+        console.error("Error converting or uploading tar file:", error);
+    } finally {
+        // Close streams and perform cleanup
+        if (tarStream && !tarStream.closed) {
+            tarStream.destroy(); // Ensure the stream is closed if an error occurs
+            console.log("Closed tarStream");
+        }
+        
+    }
     // await sleep(20000)
 
     await gzipAndUpload(outputBucket, finalTarFileName, outputBucket);
