@@ -70,9 +70,10 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
         await sleep(1000)
     }
     try {
-        await Promise.all(batches.map((batch, i) => {
-            return uploadBatch(batch, i, batches.length, i === batches.length - 1, inputBucket, outputBucket, inputDir, outputKey, format, instance);
-        }));
+        // Process batches sequentially
+        for (let i = 0; i < batches.length; i++) {
+            await uploadBatch(batches[i], i, batches.length, i === batches.length - 1, inputBucket, outputBucket, inputDir, outputKey, format, instance);
+        }
     } catch (error) {
         console.error("Error during batch upload:", error);
         throw error;
