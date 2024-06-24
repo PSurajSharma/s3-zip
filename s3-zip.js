@@ -70,9 +70,10 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
         await sleep(1000)
     }
     try {
-        await Promise.all(batches.map((batch, i) => {
-            return uploadBatch(batch, i, batches.length, i === batches.length - 1, inputBucket, outputBucket, inputDir, outputKey, format, instance);
-        }));
+        // Process batches sequentially
+        for (let i = 0; i < batches.length; i++) {
+            await uploadBatch(batches[i], i, batches.length, i === batches.length - 1, inputBucket, outputBucket, inputDir, outputKey, format, instance);
+        }
     } catch (error) {
         console.error("Error during batch upload:", error);
         throw error;
@@ -110,7 +111,7 @@ const uploadBatch = async (files, batchIndex,  totalNumberOfBatches, lastBatch, 
 
     const uploadParams = {
         Body: streamPassThrough,
-        ContentType: "application/zip",
+        ContentType: "application/x-tar",
         Key: batchFileName,
         Bucket: outputBucket,
     };
@@ -174,7 +175,7 @@ const uploadBatch = async (files, batchIndex,  totalNumberOfBatches, lastBatch, 
             archive.append(ins.stream, {name: ins.fileName});
         });
 
-        // await sleep(10000)
+        await sleep(10000)
         await archive.finalize();
         // await sleep(10000)
     }).catch((error) => {
@@ -184,54 +185,16 @@ const uploadBatch = async (files, batchIndex,  totalNumberOfBatches, lastBatch, 
         ins.stream.end()
     })
     await s3UploadPromise;
+    console.log(`created tar file:${batchFileName} and successfully uploaded to s3`)
     streamPassThrough.end()
 
-    let finalTarFileName = `${rawBatchFileName}.tar`;
-    let tarStream;
-    try {
-        const zipData = await s3.getObject({ Bucket: outputBucket, Key: batchFileName }).promise();
-        const zipBuffer = zipData.Body;
-        // Convert ZIP to TAR
-        tarStream = zipToTar(zipBuffer, { progress: true })
-            .on('error', (error) => {
-                console.error("Error converting ZIP to TAR:", error);
-                throw error;
-            })
-            .getStream();
-
-        // Upload TAR file to S3
-        const uploadParams = {
-            Bucket: outputBucket,
-            Key: finalTarFileName,
-            Body: tarStream
-        };
-        await s3.upload(uploadParams).promise();
-
-        console.log(`Converted and uploaded TAR file: ${finalTarFileName}`);
-
-        //Delete original ZIP file from S3
-        await s3.deleteObject({
-            Bucket: outputBucket,
-            Key: batchFileName,
-        }).promise();
-        console.log(`Deleted original ZIP file: ${batchFileName}`);
-    } catch (error) {
-        console.error("Error converting or uploading tar file:", error);
-    } finally {
-        // Close streams and perform cleanup
-        if (tarStream && !tarStream.closed) {
-            tarStream.destroy(); // Ensure the stream is closed if an error occurs
-            console.log("Closed tarStream");
-        }
-        
-    }
     // await sleep(20000)
 
-    await gzipAndUpload(outputBucket, finalTarFileName, outputBucket);
+    await gzipAndUpload(outputBucket, batchFileName, outputBucket);
     
-    const params = {Bucket: OUTPUT_BUCKET, Key: `${finalTarFileName}.gz`};
+    const params = {Bucket: OUTPUT_BUCKET, Key: `${batchFileName}.gz`};
     if (ENABLE_FILE_TRANSFER) {
-        await transfer(sftpConfig, params, `${finalTarFileName}.gz`)
+        await transfer(sftpConfig, params, `${batchFileName}.gz`)
     }
 }
 
@@ -260,7 +223,7 @@ const gzipAndUpload = async (bucket, key, outputBucket) => {
         // Delete original file
         await s3.deleteObject({Bucket: bucket, Key: key}).promise();
 
-        console.log(`Original file deleted: ${key}`);
+        console.log(`Original tar file deleted: ${key}`);
     } catch (error) {
         console.error("Gzip and upload error:", error);
         throw error;
@@ -329,5 +292,5 @@ const BATCH_SIZE = process.env.BATCH_SIZE || 2;
 
 const ENABLE_FILE_TRANSFER = process.env.ENABLE_FILE_TRANSFER || false;
 
-start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, "zip", sftpConfig, INSTANCE).then(async () => {
+start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, "tar", sftpConfig, INSTANCE).then(async () => {
 });
