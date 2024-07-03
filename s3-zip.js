@@ -14,20 +14,38 @@ const {app} = require("serverless/lib/cli/commands-schema/common-options/aws-ser
 const path = require('path');
 const {sleep} = require("ssh2-sftp-client/src/utils");
 const agent = new https.Agent({keepAlive: true, maxSockets: 16});
-const  zipToTar  = require('zip-to-tar');
 AWS.config.update({httpOptions: {agent}, region: "eu-south-2"});
 
 const s3 = new AWS.S3();
 
+const sftpConfig = {
+    host: process.env.SFTP_HOST || "192.168.1.2",
+    port: parseInt(process.env.SFTP_PORT || "22", 10),
+    user: process.env.SFTP_USER || "tester",
+    password: process.env.SFTP_PASSWORD || "password",
+    dir: process.env.SFTP_DIR || "/s3",
+    retries: 3,
+    minTimeout: 60000
+}
+
+const INPUT_BUCKET = process.env.INPUT_BUCKET
+const INPUT_DIRECTORY = process.env.INPUT_DIRECTORY
+const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
+const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
+const INSTANCE = parseInt(process.env.INSTANCE, 10)
+const BATCH_SIZE = process.env.BATCH_SIZE || 2;
+
+const ENABLE_FILE_TRANSFER = process.env.ENABLE_FILE_TRANSFER || false;
+
 const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
-    // await sleep(10000)
+    await sleep(10000)
     console.log(`Initiating file transfer for ${outputKey} to ${sftpConfig.host}`);
     if (!sftp.sftp) {
         console.log("Reconnecting to SFTP server...");
         await sftp.connect(sftpConfig);
     }
     const s3Stream = s3.getObject(params).createReadStream();
-    
+
     try {
         await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
         console.log(`File transfer completed for ${outputKey}`);
@@ -47,9 +65,6 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     console.log(
         `inputBucket: ${inputBucket}, outputBucket: ${outputBucket}, inputDir: ${inputDir}, outputKey: ${outputKey}, format : ${format}`
     );
-
-    const outputFileName = outputKey + "." + format
-
     let files;
     if (inputBucket) {
         files = await listObjects(inputBucket, inputDir);
@@ -62,7 +77,7 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
 
     const batches = createBatches(files, parseInt(BATCH_SIZE, 10));
     console.log("number of batches", batches.length)
-    
+
     if (ENABLE_FILE_TRANSFER) {
         await sftp.connect(sftpConfig).then((connection) => {
             console.log("SFTP connection successful")
@@ -72,20 +87,20 @@ const start = async function (inputBucket, inputDir, outputBucket, outputKey, fo
     try {
         // Process batches sequentially
         for (let i = 0; i < batches.length; i++) {
-            await uploadBatch(batches[i], i, batches.length, i === batches.length - 1, inputBucket, outputBucket, inputDir, outputKey, format, instance);
+            await uploadBatch(batches[i], i + 1, batches.length, i === batches.length - 1, inputBucket, outputBucket, inputDir, outputKey, format, instance);
         }
     } catch (error) {
         console.error("Error during batch upload:", error);
         throw error;
     }
-    
-    await sleep(1000)
-    await cleanupAndStopProcess();
 
-    return {
-        statusCode: 200,
-        body: JSON.stringify({outputFileName}),
-    };
+
+    if (instance === 0) {
+        console.log("Instance 0 is waiting for other instances to finish")
+        await sleep(1000 * 900)
+    }
+    await sleep(10000)
+    await cleanupAndStopProcess();
 }
 
 const createBatches = (files, batchSize) => {
@@ -96,7 +111,7 @@ const createBatches = (files, batchSize) => {
     return batches;
 }
 
-const uploadBatch = async (files, batchIndex,  totalNumberOfBatches, lastBatch, inputBucket, outputBucket, inputDir, outputKey, format, instance) => {
+const uploadBatch = async (files, batchIndex, totalNumberOfBatches, lastBatch, inputBucket, outputBucket, inputDir, outputKey, format, instance) => {
     const batchNumber = INSTANCE * totalNumberOfBatches + batchIndex
     let billRunStr = ''
     let billRunID;
@@ -177,7 +192,7 @@ const uploadBatch = async (files, batchIndex,  totalNumberOfBatches, lastBatch, 
 
         await sleep(10000)
         await archive.finalize();
-        // await sleep(10000)
+        await sleep(10000)
     }).catch((error) => {
         throw new Error(`${error.code} ${error.message} ${error.data}`);
     });
@@ -188,10 +203,10 @@ const uploadBatch = async (files, batchIndex,  totalNumberOfBatches, lastBatch, 
     console.log(`created tar file:${batchFileName} and successfully uploaded to s3`)
     streamPassThrough.end()
 
-    // await sleep(20000)
+    await sleep(20000)
 
     await gzipAndUpload(outputBucket, batchFileName, outputBucket);
-    
+
     const params = {Bucket: OUTPUT_BUCKET, Key: `${batchFileName}.gz`};
     if (ENABLE_FILE_TRANSFER) {
         await transfer(sftpConfig, params, `${batchFileName}.gz`)
@@ -224,6 +239,7 @@ const gzipAndUpload = async (bucket, key, outputBucket) => {
         await s3.deleteObject({Bucket: bucket, Key: key}).promise();
 
         console.log(`Original tar file deleted: ${key}`);
+        await sleep(10000)
     } catch (error) {
         console.error("Gzip and upload error:", error);
         throw error;
@@ -274,23 +290,6 @@ const cleanupAndStopProcess = async () => {
     console.log("Cleanup completed. Stopping process.");
     process.exit(0); // Exit the Node.js process with success code
 }
-
-const sftpConfig = {
-    host: process.env.SFTP_PORT || "192.168.1.2",
-    port: parseInt(process.env.SFTP_PORT || "22", 10),
-    user: process.env.SFTP_USER || "tester",
-    password: process.env.SFTP_PASSWORD || "password",
-    dir: process.env.SFTP_DIR || "/s3",
-}
-
-const INPUT_BUCKET = process.env.INPUT_BUCKET
-const INPUT_DIRECTORY = process.env.INPUT_DIRECTORY
-const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET
-const OUTPUT_FILE_NAME = process.env.OUTPUT_FILE_NAME
-const INSTANCE = parseInt(process.env.INSTANCE, 10)
-const BATCH_SIZE = process.env.BATCH_SIZE || 2;
-
-const ENABLE_FILE_TRANSFER = process.env.ENABLE_FILE_TRANSFER || false;
 
 start(INPUT_BUCKET, INPUT_DIRECTORY, OUTPUT_BUCKET, OUTPUT_FILE_NAME, "tar", sftpConfig, INSTANCE).then(async () => {
 });
