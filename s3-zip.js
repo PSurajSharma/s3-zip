@@ -44,17 +44,29 @@ const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
         console.log("Reconnecting to SFTP server...");
         await sftp.connect(sftpConfig);
     }
+    const passThroughStream = new stream.PassThrough();
     const s3Stream = s3.getObject(params).createReadStream();
+    s3Stream.pipe(passThroughStream);
 
-    try {
-        await sftp.put(s3Stream, sftpConfig.dir + "/" + outputKey);
-        console.log(`File transfer completed for ${outputKey}`);
-    } catch (error) {
-        console.error(`Failed to transfer file: ${outputKey}`, error);
-        throw error;
-    } finally {
-        s3Stream.destroy();
+    let retries = sftpConfig.retries;
+    while (retries > 0) {
+        try {
+            await sftp.put(passThroughStream, sftpConfig.dir + "/" + outputKey);
+            console.log(`File transfer completed for ${outputKey}`);
+            break;
+        } catch (error) {
+            console.error(`Failed to transfer file: ${outputKey}`, error);
+            if (retries === 1) {
+                throw error;
+            }
+            console.log(`Retrying... ${retries - 1} attempts left.`);
+            retries--;
+            await sleep(sftpConfig.minTimeout);
+        }
     }
+
+    s3Stream.destroy();
+    passThroughStream.end();
 }
 
 const start = async function (inputBucket, inputDir, outputBucket, outputKey, format, sftpConfig, instance, context, callback) {
