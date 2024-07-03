@@ -46,12 +46,12 @@ const transfer = async function sftpTransfer(sftpConfig, params, outputKey) {
     }
     const passThroughStream = new stream.PassThrough();
     const s3Stream = s3.getObject(params).createReadStream();
-    s3Stream.pipe(passThroughStream);
+    s3Stream.pipe(passThroughStream,{ end: true, highWaterMark: 16 * 1024 });
 
     let retries = sftpConfig.retries;
     while (retries > 0) {
         try {
-            await sftp.put(passThroughStream, sftpConfig.dir + "/" + outputKey);
+            await sftp.put(passThroughStream, sftpConfig.dir + "/" + outputKey,{ compression: true });
             console.log(`File transfer completed for ${outputKey}`);
             break;
         } catch (error) {
